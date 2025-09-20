@@ -721,25 +721,40 @@ class Index
      */
     private function orderNotify($order)
     {
-        // 准备通知数据
-        $data = [
-            'payId' => $order['pay_id'],
-            'param' => $order['param'],
-            'type' => $order['type'],
-            'price' => $order['price'],
-            'reallyPrice' => $order['really_price']
-        ];
-        
         // 获取密钥
         $key = Db::name("setting")->where("vkey", "key")->find();
-        
-        // 计算签名
-        $sign = md5($data['payId'] . $data['param'] . $data['type'] . $data['price'] . $data['reallyPrice'] . $key['vvalue']);
-        $data['sign'] = $sign;
-        
-        // 发送通知
-        $notifyResult = $this->getCurl($order['notify_url'], http_build_query($data));
-        
+        $systemKey = $key ? $key['vvalue'] : '';
+
+        // 新版优先：POST + payId=order_id + QueryString参与签名
+        $paramsNew = [
+            'payId' => $order['order_id'],
+            'param' => $order['param'],
+            'type' => $order['type'],
+            'price' => (string)$order['price'],
+            'reallyPrice' => (string)$order['really_price']
+        ];
+        $signNew = md5("payId=".$paramsNew['payId']."&param=".$paramsNew['param']."&type=".$paramsNew['type']."&price=".$paramsNew['price']."&reallyPrice=".$paramsNew['reallyPrice']."&key=".$systemKey);
+        $paramsNew['sign'] = $signNew;
+
+        // 发送通知（POST）
+        $notifyResult = $this->getCurl($order['notify_url'], http_build_query($paramsNew));
+        error_log('[Notify][index.orderNotify][new] order_id=' . $order['order_id'] . ' pay_id=' . $order['pay_id'] . ' url=' . $order['notify_url'] . ' resp=' . trim((string)$notifyResult));
+
+        if (trim((string)$notifyResult) !== 'success') {
+            // 失败回退旧版：GET + payId=pay_id + 旧版拼接签名
+            $legacyPayId = $order['pay_id'];
+            $p = "payId=".$legacyPayId.
+                "&param=".$order['param'].
+                "&type=".$order['type'].
+                "&price=".$order['price'].
+                "&reallyPrice=".$order['really_price'];
+            $legacySign = md5($legacyPayId.$order['param'].$order['type'].$order['price'].$order['really_price'].$systemKey);
+            $p .= "&sign=".$legacySign;
+            $legacyUrl = (strpos($order['notify_url'], "?") === false) ? ($order['notify_url']."?".$p) : ($order['notify_url']."&".$p);
+            $notifyResult = $this->getCurl($legacyUrl);
+            error_log('[Notify][index.orderNotify][legacy] order_id=' . $order['order_id'] . ' pay_id=' . $order['pay_id'] . ' url=' . $legacyUrl . ' resp=' . trim((string)$notifyResult));
+        }
+
         return $notifyResult;
     }
 } 

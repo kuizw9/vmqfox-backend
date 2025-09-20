@@ -21,14 +21,14 @@ Route::group('api', function () {
     // 认证相关
     Route::post('auth/login', 'api/Auth/login');
     Route::post('auth/logout', 'api/Auth/logout');
-    
+
     // 用户相关
     Route::get('user/info', 'api/User/info');
     Route::get('user/list', 'api/User/list');
-    
+
     // 菜单相关
     Route::get('menu', 'api/Menu/index');
-    
+
     // 订单相关
     Route::any('order/create', 'api/Order/create');
     Route::get('order/list', 'api/Order/list');
@@ -39,8 +39,9 @@ Route::group('api', function () {
     Route::delete('order/:id', 'api/Order/delete');
     Route::post('order/expired', 'api/Order/closeExpired');
     Route::delete('order/last', 'api/Order/deleteLast');
+        Route::post('order/reissue/:id', 'api/Order/reissue');
          Route::get('order/return-url/:id', 'api/Order/generateReturnUrl'); // 恢复：用于支付成功时生成带签名的返回URL
-    
+
     // 二维码相关
     Route::get('qrcode/list', 'api/Qrcode/list');
     Route::post('qrcode/add', 'api/Qrcode/add');
@@ -54,7 +55,7 @@ Route::group('api', function () {
     Route::post('qrcode/bind/:id', 'api/Qrcode/bind');
     Route::get('qrcode/generate', 'api/Qrcode/generate');
     Route::delete('qrcode/:id', 'api/Qrcode/delete');
-    
+
     // 系统配置
     Route::get('config/get', 'api/Config/get');
     Route::post('config/save', 'api/Config/save');
@@ -63,11 +64,11 @@ Route::group('api', function () {
     Route::post('config/settings', 'api/Config/updateSettings');
     Route::get('config/monitor', 'api/Config/monitor');
     Route::post('config/monitor', 'api/Config/updateMonitor');
-    
+
     // 监控相关
     Route::any('monitor/heart', 'api/Monitor/heart');
     Route::any('monitor/push', 'api/Monitor/push');
-    
+
     // 管理员设置相关 - 兼容旧版API
     Route::post('admin/index/getSettings', 'admin/Index/getSettings');
     Route::post('admin/index/saveSetting', 'admin/Index/saveSetting');
@@ -84,14 +85,14 @@ Route::group('api', function () {
     // 登录相关
     Route::post('login', 'index/Index/login');
     Route::any('getMenu', 'index/Index/getMenu');
-    
+
     // 订单相关
     Route::any('createOrder', 'index/Index/createOrder');
     Route::get('getOrder', 'index/Index/getOrder');
     Route::get('checkOrder', 'index/Index/checkOrder');
     Route::post('closeOrder', 'index/Index/closeOrder');
     Route::get('getState', 'index/Index/getState');
-    
+
     // 应用相关
     //Route::post('appHeart', 'index/Index/appHeart');
     //Route::post('appPush', 'index/Index/appPush');
@@ -104,20 +105,20 @@ Route::group('admin', function () {
     Route::get('checkUpdate', 'admin/Index/checkUpdate');
     Route::get('getSettings', 'admin/Index/getSettings');
     Route::post('saveSetting', 'admin/Index/saveSetting');
-    
+
     // 二维码管理
     Route::post('addPayQrcode', 'admin/Index/addPayQrcode');
     Route::get('getPayQrcodes', 'admin/Index/getPayQrcodes');
     Route::post('delPayQrcode', 'admin/Index/delPayQrcode');
     Route::post('setBd', 'admin/Index/setBd');
     Route::get('enQrcode/:url', 'admin/Index/enQrcode');
-    
+
     // 订单管理
     Route::get('getOrders', 'admin/Index/getOrders');
     Route::post('delOrder', 'admin/Index/delOrder');
     Route::post('delGqOrder', 'admin/Index/delGqOrder');
     Route::post('delLastOrder', 'admin/Index/delLastOrder');
-    
+
     // 其他
     Route::get('ip', 'admin/Index/ip');
 });
@@ -158,4 +159,4 @@ Route::get('admin/index/getPayQrcodes', 'admin/Index/getPayQrcodes');
 Route::post('admin/index/delPayQrcode', 'admin/Index/delPayQrcode');
 Route::post('admin/index/addPayQrcode', 'admin/Index/addPayQrcode');
 Route::post('admin/index/saveSetting', 'admin/Index/saveSetting');
-Route::get('admin/index/getSettings', 'admin/Index/getSettings'); 
+Route::get('admin/index/getSettings', 'admin/Index/getSettings');

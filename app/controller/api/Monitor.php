@@ -145,24 +145,42 @@ class Monitor extends BaseController
                 "state" => 1, "pay_date" => time(), "close_date" => time()
             ]);
 
-            // 准备并发送异步通知 (逻辑来自旧版 appPush)
+            // 准备并发送异步通知：新版优先，失败回退旧版
             $notifyUrl = $order['notify_url'];
             if (!empty($notifyUrl)) {
-                $p = "payId=".$order['pay_id']."&param=".$order['param']."&type=".$order['type']."&price=".$order['price']."&reallyPrice=".$order['really_price'];
-                $signStr = $order['pay_id'].$order['param'].$order['type'].$order['price'].$order['really_price'].$systemKey;
-                $p = $p . "&sign=".md5($signStr);
+                // 新版：POST + payId=order_id + QueryString参与签名
+                $payIdNew = $order['order_id'];
+                $param = $order['param'];
+                $type = $order['type'];
+                $price = (string)$order['price'];
+                $reallyPrice = (string)$order['really_price'];
+                $signNew = md5("payId={$payIdNew}&param={$param}&type={$type}&price={$price}&reallyPrice={$reallyPrice}&key={$systemKey}");
+                $paramsNew = [
+                    'payId' => $payIdNew,
+                    'param' => $param,
+                    'type' => $type,
+                    'price' => $price,
+                    'reallyPrice' => $reallyPrice,
+                    'sign' => $signNew,
+                ];
+                $re = $this->postCurl($notifyUrl, $paramsNew);
+                error_log('[Notify][push][new] order_id=' . $order['order_id'] . ' pay_id=' . $order['pay_id'] . ' url=' . $notifyUrl . ' resp=' . trim((string)$re));
 
-                if (strpos($notifyUrl, "?") === false) {
-                    $notifyUrl = $notifyUrl."?".$p;
-                } else {
-                    $notifyUrl = $notifyUrl."&".$p;
-                }
-                
-                $re = $this->getCurl($notifyUrl); // 发送GET请求
-                
-                // 如果通知失败，则更新订单状态为2
-                if ($re != "success") {
-                    Db::name("pay_order")->where("id", $order['id'])->update(["state" => 2]);
+                if (trim((string)$re) !== 'success') {
+                    // 旧版回退：GET + payId=pay_id + 旧版拼接签名
+                    $legacyPayId = $order['pay_id'];
+                    $p = "payId=".$legacyPayId."&param=".$order['param']."&type=".$order['type']."&price=".$order['price']."&reallyPrice=".$order['really_price'];
+                    $signStr = $legacyPayId.$order['param'].$order['type'].$order['price'].$order['really_price'].$systemKey;
+                    $p .= "&sign=".md5($signStr);
+
+                    $legacyUrl = (strpos($notifyUrl, "?") === false) ? ($notifyUrl."?".$p) : ($notifyUrl."&".$p);
+                    $re2 = $this->getCurl($legacyUrl);
+                    error_log('[Notify][push][legacy] order_id=' . $order['order_id'] . ' pay_id=' . $order['pay_id'] . ' url=' . $legacyUrl . ' resp=' . trim((string)$re2));
+
+                    // 如果两种方式都失败，则更新订单状态为2
+                    if (trim((string)$re2) !== 'success') {
+                        Db::name("pay_order")->where("id", $order['id'])->update(["state" => 2]);
+                    }
                 }
             }
             return $this->success(null, '订单支付成功');
@@ -256,24 +274,42 @@ class Monitor extends BaseController
                 "state" => 1, "pay_date" => time(), "close_date" => time()
             ]);
 
-            // 准备并发送异步通知
+            // 准备并发送异步通知：新版优先，失败回退旧版
             $notifyUrl = $order['notify_url'];
             if (!empty($notifyUrl)) {
-                $p = "payId=".$order['pay_id']."&param=".$order['param']."&type=".$order['type']."&price=".$order['price']."&reallyPrice=".$order['really_price'];
-                $signStr = $order['pay_id'].$order['param'].$order['type'].$order['price'].$order['really_price'].$systemKey;
-                $p = $p . "&sign=".md5($signStr);
+                // 新版：POST + payId=order_id + QueryString参与签名
+                $payIdNew = $order['order_id'];
+                $param = $order['param'];
+                $type = $order['type'];
+                $price = (string)$order['price'];
+                $reallyPrice = (string)$order['really_price'];
+                $signNew = md5("payId={$payIdNew}&param={$param}&type={$type}&price={$price}&reallyPrice={$reallyPrice}&key={$systemKey}");
+                $paramsNew = [
+                    'payId' => $payIdNew,
+                    'param' => $param,
+                    'type' => $type,
+                    'price' => $price,
+                    'reallyPrice' => $reallyPrice,
+                    'sign' => $signNew,
+                ];
+                $re = $this->postCurl($notifyUrl, $paramsNew);
+                error_log('[Notify][appPush][new] order_id=' . $order['order_id'] . ' pay_id=' . $order['pay_id'] . ' url=' . $notifyUrl . ' resp=' . trim((string)$re));
 
-                if (strpos($notifyUrl, "?") === false) {
-                    $notifyUrl = $notifyUrl."?".$p;
-                } else {
-                    $notifyUrl = $notifyUrl."&".$p;
-                }
-                
-                $re = $this->postCurl($notifyUrl, []); // 发送GET请求
-                
-                // 如果通知失败，则更新订单状态为2
-                if ($re != "success") {
-                    Db::name("pay_order")->where("id", $order['id'])->update(["state" => 2]);
+                if (trim((string)$re) !== 'success') {
+                    // 旧版回退：GET + payId=pay_id + 旧版拼接签名
+                    $legacyPayId = $order['pay_id'];
+                    $p = "payId=".$legacyPayId."&param=".$order['param']."&type=".$order['type']."&price=".$order['price']."&reallyPrice=".$order['really_price'];
+                    $signStr = $legacyPayId.$order['param'].$order['type'].$order['price'].$order['really_price'].$systemKey;
+                    $p .= "&sign=".md5($signStr);
+
+                    $legacyUrl = (strpos($notifyUrl, "?") === false) ? ($notifyUrl."?".$p) : ($notifyUrl."&".$p);
+                    $re2 = $this->getCurl($legacyUrl);
+                    error_log('[Notify][appPush][legacy] order_id=' . $order['order_id'] . ' pay_id=' . $order['pay_id'] . ' url=' . $legacyUrl . ' resp=' . trim((string)$re2));
+
+                    // 如果两种方式都失败，则更新订单状态为2
+                    if (trim((string)$re2) !== 'success') {
+                        Db::name("pay_order")->where("id", $order['id'])->update(["state" => 2]);
+                    }
                 }
             }
         } catch (\Exception $e) {
@@ -324,32 +360,39 @@ class Monitor extends BaseController
         $setting = Db::name("setting")->where("vkey", "key")->find();
         $key = $setting ? $setting['vvalue'] : '';
         
-        // 构建通知参数
-        $params = [
+        // 构建通知参数（新版优先）
+        $paramsNew = [
             'payId' => $order['order_id'],
             'param' => $order['param'],
             'type' => $order['type'],
-            'price' => $order['price'],
-            'reallyPrice' => $order['really_price']
+            'price' => (string)$order['price'],
+            'reallyPrice' => (string)$order['really_price']
         ];
-        
-        // 计算签名
-        $sign = md5("payId=" . $params['payId'] . "&param=" . $params['param'] . "&type=" . $params['type'] . "&price=" . $params['price'] . "&reallyPrice=" . $params['reallyPrice'] . "&key=" . $key);
-        $params['sign'] = $sign;
-        
-        // 发送异步通知
-        $result = $this->postCurl($order['notify_url'], $params);
-        
-        // 记录通知结果
-        $log = [
-            'url' => $order['notify_url'],
-            'params' => json_encode($params),
-            'response' => $result,
-            'time' => date('Y-m-d H:i:s')
-        ];
-        
-        // 可以将通知日志记录到文件或数据库
-        
+        $signNew = md5("payId=" . $paramsNew['payId'] . "&param=" . $paramsNew['param'] . "&type=" . $paramsNew['type'] . "&price=" . $paramsNew['price'] . "&reallyPrice=" . $paramsNew['reallyPrice'] . "&key=" . $key);
+        $paramsNew['sign'] = $signNew;
+
+        // 发送异步通知（新版POST）
+        $result = $this->postCurl($order['notify_url'], $paramsNew);
+        error_log('[Notify][orderNotify][new] order_id=' . $order['order_id'] . ' pay_id=' . $order['pay_id'] . ' url=' . $order['notify_url'] . ' resp=' . trim((string)$result));
+
+        if (trim((string)$result) !== 'success') {
+            // 失败回退旧版：GET + 旧签名 + pay_id
+            $legacyPayId = $order['pay_id'];
+            $p = "payId=".$legacyPayId.
+                "&param=".$order['param'].
+                "&type=".$order['type'].
+                "&price=".$order['price'].
+                "&reallyPrice=".$order['really_price'];
+            $signStr = $legacyPayId.$order['param'].$order['type'].$order['price'].$order['really_price'].$key;
+            $p .= "&sign=".md5($signStr);
+            $legacyUrl = (strpos($order['notify_url'], "?") === false) ? ($order['notify_url']."?".$p) : ($order['notify_url']."&".$p);
+            $result = $this->getCurl($legacyUrl);
+            error_log('[Notify][orderNotify][legacy] order_id=' . $order['order_id'] . ' pay_id=' . $order['pay_id'] . ' url=' . $legacyUrl . ' resp=' . trim((string)$result));
+        }
+
+        // 可选：记录通知结果
+        // $log = [...];
+
         return true;
     }
     
