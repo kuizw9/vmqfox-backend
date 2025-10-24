@@ -22,11 +22,6 @@ var (
 	ErrInvalidSign     = errors.New("invalid signature")
 )
 
-// UserSyncService 用户同步服务接口（避免循环依赖）
-type UserSyncService interface {
-	SyncSettingToUser(userID uint, settingKey, settingValue string) error
-}
-
 // SettingService 系统设置服务接口
 type SettingService interface {
 	GetSystemConfig(userID uint) (*model.SystemConfigResponse, error)
@@ -41,92 +36,96 @@ type SettingService interface {
 	GetSystemInfo() (*model.SystemInfoResponse, error)
 	CheckUpdate(req *model.UpdateSystemRequest) (*model.UpdateSystemResponse, error)
 	GetIPInfo() (*model.IPInfoResponse, error)
-	SetUserSyncService(userSyncService UserSyncService)
-	GetSettingValue(key string) (string, error) // 新增方法，用于公开API
-	GetUserSettingValue(userID uint, key string) (string, error)
-	// 商户映射相关方法
-	GetUserIDByAppID(appId string) (uint, error)
-	SetMerchantMapping(userID uint, appId string) error
 	// 监控端状态检查
 	CheckAndUpdateMonitorStatus() error
 }
 
 // settingService 系统设置服务实现
 type settingService struct {
-	settingRepo     repository.SettingRepository
-	orderRepo       repository.OrderRepository
-	merchantRepo    repository.MerchantRepository
-	userSyncService UserSyncService
-	startTime       time.Time
+	userRepo  repository.UserRepository
+	orderRepo repository.OrderRepository
+	startTime time.Time
 }
 
 // NewSettingService 创建系统设置服务
-func NewSettingService(settingRepo repository.SettingRepository, orderRepo repository.OrderRepository, merchantRepo repository.MerchantRepository) SettingService {
+func NewSettingService(userRepo repository.UserRepository, orderRepo repository.OrderRepository) SettingService {
 	return &settingService{
-		settingRepo:  settingRepo,
-		orderRepo:    orderRepo,
-		merchantRepo: merchantRepo,
-		startTime:    time.Now(),
+		userRepo:  userRepo,
+		orderRepo: orderRepo,
+		startTime: time.Now(),
 	}
-}
-
-// SetUserSyncService 设置用户同步服务
-func (s *settingService) SetUserSyncService(userSyncService UserSyncService) {
-	s.userSyncService = userSyncService
-}
-
-// GetSettingValue 获取设置值（用于公开API，默认使用用户ID=1）
-func (s *settingService) GetSettingValue(key string) (string, error) {
-	setting, err := s.settingRepo.GetSetting(1, key) // 默认使用用户ID=1
-	if err != nil {
-		return "", err
-	}
-	return setting.Vvalue, nil
 }
 
 // GetSystemConfig 获取系统配置
 func (s *settingService) GetSystemConfig(userID uint) (*model.SystemConfigResponse, error) {
-	settingsMap, err := s.settingRepo.GetSettingsMap(userID)
+	// 从users表获取用户配置
+	user, err := s.userRepo.GetByID(userID)
 	if err != nil {
 		return nil, err
 	}
 
 	// 如果key为空，生成一个新的
-	if settingsMap["key"] == "" {
+	if user.Key == nil || *user.Key == "" {
 		newKey := fmt.Sprintf("%x", md5.Sum([]byte(fmt.Sprintf("%d", time.Now().Unix()))))
-		err = s.settingRepo.UpdateSetting(userID, "key", newKey)
-		if err != nil {
+		user.Key = &newKey
+		if err := s.userRepo.Update(user); err != nil {
 			return nil, err
 		}
-		settingsMap["key"] = newKey
+	}
+
+	// 转换为字符串
+	lastheart := ""
+	if user.Lastheart != nil {
+		lastheart = strconv.FormatInt(*user.Lastheart, 10)
+	}
+	lastpay := ""
+	if user.Lastpay != nil {
+		lastpay = strconv.FormatInt(*user.Lastpay, 10)
+	}
+	jkstate := "0"
+	if user.Jkstate != nil {
+		jkstate = strconv.Itoa(*user.Jkstate)
+	}
+	closeStr := "5"
+	if user.Close != nil {
+		closeStr = strconv.Itoa(*user.Close)
+	}
+	payQfStr := "1"
+	if user.PayQf != nil {
+		payQfStr = strconv.Itoa(*user.PayQf)
 	}
 
 	return &model.SystemConfigResponse{
-		User:      settingsMap["user"],
-		Pass:      settingsMap["pass"],
-		NotifyUrl: settingsMap["notifyUrl"],
-		ReturnUrl: settingsMap["returnUrl"],
-		Key:       settingsMap["key"],
-		AppId:     settingsMap["appId"], // 从setting表获取AppID
-		Lastheart: settingsMap["lastheart"],
-		Lastpay:   settingsMap["lastpay"],
-		Jkstate:   settingsMap["jkstate"],
-		Close:     settingsMap["close"],
-		PayQf:     settingsMap["payQf"],
-		Wxpay:     settingsMap["wxpay"],
-		Zfbpay:    settingsMap["zfbpay"],
-		// 注册配置字段
-		RegisterEnabled:         settingsMap["register_enabled"],
-		RegisterDefaultRole:     settingsMap["register_default_role"],
-		RegisterRequireApproval: settingsMap["register_require_approval"],
-		RegisterRateLimit:       settingsMap["register_rate_limit"],
+		User:      user.GetUser(),
+		Pass:      user.GetPass(),
+		NotifyUrl: user.GetNotifyUrl(),
+		ReturnUrl: user.GetReturnUrl(),
+		Key:       user.GetKey(),
+		AppId:     user.GetAppId(),
+		Lastheart: lastheart,
+		Lastpay:   lastpay,
+		Jkstate:   jkstate,
+		Close:     closeStr,
+		PayQf:     payQfStr,
+		Wxpay:     user.GetWxpay(),
+		Zfbpay:    user.GetZfbpay(),
+		// 注册配置字段（TODO: 从global_settings表获取）
+		RegisterEnabled:         "1",
+		RegisterDefaultRole:     "admin",
+		RegisterRequireApproval: "0",
+		RegisterRateLimit:       "10",
 	}, nil
 }
 
 // UpdateSystemConfig 更新系统配置
 func (s *settingService) UpdateSystemConfig(userID uint, req *model.SystemConfigRequest) error {
+	// 获取用户
+	user, err := s.userRepo.GetByID(userID)
+	if err != nil {
+		return err
+	}
+
 	// 处理密码加密
-	hashedPassword := req.Pass
 	if req.Pass != "" {
 		// 检查是否已经是哈希值（bcrypt哈希值以$2a$、$2b$、$2x$、$2y$开头）
 		if len(req.Pass) < 60 || (!strings.HasPrefix(req.Pass, "$2a$") &&
@@ -139,70 +138,57 @@ func (s *settingService) UpdateSystemConfig(userID uint, req *model.SystemConfig
 				log.Printf("Failed to hash password: %v", err)
 				return err
 			}
-			hashedPassword = string(hashedBytes)
+			user.Pass = stringPtr(string(hashedBytes))
+		} else {
+			user.Pass = &req.Pass
 		}
 	}
 
-	// 允许修改的配置项
-	allowedKeys := map[string]string{
-		"user":      req.User,
-		"pass":      hashedPassword, // 使用加密后的密码
-		"notifyUrl": req.NotifyUrl,
-		"returnUrl": req.ReturnUrl,
-		"close":     req.Close,
-		"payQf":     req.PayQf,
-		"wxpay":     req.Wxpay,
-		"zfbpay":    req.Zfbpay,
-		"appId":     req.AppId, // 新增AppId字段
-		// 注册配置字段
-		"register_enabled":          req.RegisterEnabled,
-		"register_default_role":     req.RegisterDefaultRole,
-		"register_require_approval": req.RegisterRequireApproval,
-		"register_rate_limit":       req.RegisterRateLimit,
+	// 更新配置字段
+	if req.User != "" {
+		user.User = &req.User
 	}
-
-	// 如果提供了key，也允许更新
-	if req.Key != "" {
-		allowedKeys["key"] = req.Key
+	if req.NotifyUrl != "" {
+		user.NotifyUrl = &req.NotifyUrl
 	}
-
-	// 处理AppId的商户映射
+	if req.ReturnUrl != "" {
+		user.ReturnUrl = &req.ReturnUrl
+	}
+	if req.Close != "" {
+		if closeInt, err := strconv.Atoi(req.Close); err == nil {
+			user.Close = &closeInt
+		}
+	}
+	if req.PayQf != "" {
+		if payQfInt, err := strconv.Atoi(req.PayQf); err == nil {
+			user.PayQf = &payQfInt
+		}
+	}
+	if req.Wxpay != "" {
+		user.Wxpay = &req.Wxpay
+	}
+	if req.Zfbpay != "" {
+		user.Zfbpay = &req.Zfbpay
+	}
 	if req.AppId != "" {
 		// 检查AppId是否已被其他用户使用
-		exists, err := s.merchantRepo.CheckAppIdExists(req.AppId, userID)
-		if err != nil {
-			return err
-		}
-		if exists {
+		existingUser, err := s.userRepo.GetByAppID(req.AppId)
+		if err == nil && existingUser.Id != userID {
 			return errors.New("商户ID已被使用")
 		}
-
-		// 更新商户映射
-		err = s.merchantRepo.UpsertMapping(req.AppId, userID)
-		if err != nil {
-			return err
-		}
+		user.AppId = &req.AppId
+	}
+	if req.Key != "" {
+		user.Key = &req.Key
 	}
 
-	// 更新setting表
-	if err := s.settingRepo.BatchUpdateSettings(userID, allowedKeys); err != nil {
-		return err
-	}
+	// 保存更新
+	return s.userRepo.Update(user)
+}
 
-	// 触发反向同步：将需要同步的字段同步到users表
-	if s.userSyncService != nil {
-		syncFields := []string{"user", "pass"}
-		for _, key := range syncFields {
-			if value, exists := allowedKeys[key]; exists && value != "" {
-				if err := s.userSyncService.SyncSettingToUser(userID, key, value); err != nil {
-					// 记录错误但不中断操作
-					log.Printf("Warning: Failed to sync setting %s to user %d: %v", key, userID, err)
-				}
-			}
-		}
-	}
-
-	return nil
+// stringPtr 辅助函数：字符串转指针
+func stringPtr(s string) *string {
+	return &s
 }
 
 // GetSystemStatus 获取系统状态
@@ -222,16 +208,29 @@ func (s *settingService) GetSystemStatus(userID uint) (*model.SystemStatusRespon
 		return nil, err
 	}
 
-	// 获取监控状态
-	settingsMap, err := s.settingRepo.GetSettingsMap(userID)
+	// 获取用户配置
+	user, err := s.userRepo.GetByID(userID)
 	if err != nil {
 		return nil, err
 	}
 
 	// 计算监控状态
-	monitorStatus := s.calculateMonitorStatus(settingsMap["lastheart"])
-	lastHeartTime := s.formatTimestamp(settingsMap["lastheart"])
-	lastPayTime := s.formatTimestamp(settingsMap["lastpay"])
+	lastheartStr := ""
+	if user.Lastheart != nil {
+		lastheartStr = strconv.FormatInt(*user.Lastheart, 10)
+	}
+	lastpayStr := ""
+	if user.Lastpay != nil {
+		lastpayStr = strconv.FormatInt(*user.Lastpay, 10)
+	}
+	jkstateStr := "0"
+	if user.Jkstate != nil {
+		jkstateStr = strconv.Itoa(*user.Jkstate)
+	}
+
+	monitorStatus := s.calculateMonitorStatus(lastheartStr)
+	lastHeartTime := s.formatTimestamp(lastheartStr)
+	lastPayTime := s.formatTimestamp(lastpayStr)
 
 	response := &model.SystemStatusResponse{
 		TodayOrder:        todayStats.TotalOrders,
@@ -240,9 +239,9 @@ func (s *settingService) GetSystemStatus(userID uint) (*model.SystemStatusRespon
 		TodayMoney:        todayStats.TotalAmount,
 		CountOrder:        totalStats.TotalOrders,
 		CountMoney:        totalStats.TotalAmount,
-		Lastheart:         settingsMap["lastheart"],
-		Lastpay:           settingsMap["lastpay"],
-		Jkstate:           settingsMap["jkstate"],
+		Lastheart:         lastheartStr,
+		Lastpay:           lastpayStr,
+		Jkstate:           jkstateStr,
 		MonitorStatus:     monitorStatus,
 		LastHeartTime:     lastHeartTime,
 		LastPayTime:       lastPayTime,
@@ -272,17 +271,8 @@ func (s *settingService) GetGlobalSystemStatus() (*model.SystemStatusResponse, e
 		return nil, err
 	}
 
-	// 获取全局监控状态（使用用户ID=1的设置作为全局设置）
-	settingsMap, err := s.settingRepo.GetSettingsMap(1)
-	if err != nil {
-		return nil, err
-	}
-
-	// 计算监控状态
-	monitorStatus := s.calculateMonitorStatus(settingsMap["lastheart"])
-	lastHeartTime := s.formatTimestamp(settingsMap["lastheart"])
-	lastPayTime := s.formatTimestamp(settingsMap["lastpay"])
-
+	// 全局监控状态返回空值，因为没有单一的全局监控端
+	// 如果需要查看各个用户的监控状态，应该调用各自的GetSystemStatus
 	response := &model.SystemStatusResponse{
 		TodayOrder:        todayStats.TotalOrders,
 		TodaySuccessOrder: todayStats.SuccessOrders,
@@ -290,12 +280,12 @@ func (s *settingService) GetGlobalSystemStatus() (*model.SystemStatusResponse, e
 		TodayMoney:        todayStats.TotalAmount,
 		CountOrder:        totalStats.TotalOrders,
 		CountMoney:        totalStats.TotalAmount,
-		Lastheart:         settingsMap["lastheart"],
-		Lastpay:           settingsMap["lastpay"],
-		Jkstate:           settingsMap["jkstate"],
-		MonitorStatus:     monitorStatus,
-		LastHeartTime:     lastHeartTime,
-		LastPayTime:       lastPayTime,
+		Lastheart:         "",
+		Lastpay:           "",
+		Jkstate:           "0",
+		MonitorStatus:     0, // 0-未知
+		LastHeartTime:     "",
+		LastPayTime:       "",
 	}
 
 	log.Printf("全局系统状态统计 - 今日总订单: %d, 今日成功: %d, 今日失败: %d, 今日收入: %.2f",
@@ -338,84 +328,104 @@ func (s *settingService) GetDashboard(userID uint) (*model.DashboardResponse, er
 
 // GetMonitorConfig 获取监控配置
 func (s *settingService) GetMonitorConfig(userID uint) (*model.MonitorConfigResponse, error) {
-	settingsMap, err := s.settingRepo.GetSettingsMap(userID)
+	user, err := s.userRepo.GetByID(userID)
 	if err != nil {
 		return nil, err
 	}
 
+	lastheartStr := ""
+	if user.Lastheart != nil {
+		lastheartStr = strconv.FormatInt(*user.Lastheart, 10)
+	}
+	lastpayStr := ""
+	if user.Lastpay != nil {
+		lastpayStr = strconv.FormatInt(*user.Lastpay, 10)
+	}
+	jkstateStr := "0"
+	if user.Jkstate != nil {
+		jkstateStr = strconv.Itoa(*user.Jkstate)
+	}
+
 	return &model.MonitorConfigResponse{
-		Jkstate:   settingsMap["jkstate"],
-		Lastheart: settingsMap["lastheart"],
-		Lastpay:   settingsMap["lastpay"],
+		Jkstate:   jkstateStr,
+		Lastheart: lastheartStr,
+		Lastpay:   lastpayStr,
 	}, nil
 }
 
 // UpdateMonitorConfig 更新监控配置
 func (s *settingService) UpdateMonitorConfig(userID uint, req *model.MonitorConfigRequest) error {
-	return s.settingRepo.UpdateSetting(userID, "jkstate", req.Jk)
-}
-
-// ProcessMonitorHeart 处理监控心跳
-func (s *settingService) ProcessMonitorHeart(req *model.MonitorHeartRequest) error {
-	// 确定用户ID
-	userID := uint(1) // 默认用户ID
-	if req.AppID != "" {
-		log.Printf("心跳请求包含AppID: %s，尝试查找对应用户", req.AppID)
-		// 通过AppID查找用户ID
-		foundUserID, err := s.GetUserIDByAppID(req.AppID)
-		if err != nil {
-			log.Printf("AppID查找失败: %s, 错误: %v", req.AppID, err)
-			return fmt.Errorf("invalid appid: %s", req.AppID)
-		}
-		userID = foundUserID
-		log.Printf("AppID %s 对应用户ID: %d", req.AppID, userID)
-	} else {
-		log.Printf("心跳请求未包含AppID，使用默认用户ID: %d", userID)
-	}
-
-	// 获取密钥
-	key, err := s.settingRepo.GetSetting(userID, "key")
+	user, err := s.userRepo.GetByID(userID)
 	if err != nil {
 		return err
 	}
 
+	jkstate, err := strconv.Atoi(req.Jk)
+	if err != nil {
+		return err
+	}
+	user.Jkstate = &jkstate
+
+	return s.userRepo.Update(user)
+}
+
+// ProcessMonitorHeart 处理监控心跳
+func (s *settingService) ProcessMonitorHeart(req *model.MonitorHeartRequest) error {
+	// 确定用户
+	var user *model.User
+	var err error
+
+	if req.AppID != "" {
+		log.Printf("心跳请求包含AppID: %s，尝试查找对应用户", req.AppID)
+		user, err = s.userRepo.GetByAppID(req.AppID)
+		if err != nil {
+			log.Printf("AppID查找失败: %s, 错误: %v", req.AppID, err)
+			return fmt.Errorf("invalid appid: %s", req.AppID)
+		}
+		log.Printf("AppID %s 对应用户ID: %d", req.AppID, user.Id)
+	} else {
+		log.Printf("心跳请求未包含AppID，使用默认用户ID: 1")
+		user, err = s.userRepo.GetByID(1)
+		if err != nil {
+			return err
+		}
+	}
+
 	// 验证签名 - 适配Android端格式：md5(timestamp + key)
-	expectedSign := fmt.Sprintf("%x", md5.Sum([]byte(req.T+key.Vvalue)))
+	expectedSign := fmt.Sprintf("%x", md5.Sum([]byte(req.T+user.GetKey())))
 	if req.Sign != expectedSign {
 		return ErrInvalidSign
 	}
 
 	// 更新心跳时间和监控状态
-	now := strconv.FormatInt(time.Now().Unix(), 10)
-	err = s.settingRepo.UpdateSetting(userID, "lastheart", now)
-	if err != nil {
-		return err
-	}
+	now := time.Now().Unix()
+	jkstate := 1
+	user.Lastheart = &now
+	user.Jkstate = &jkstate
 
-	return s.settingRepo.UpdateSetting(userID, "jkstate", "1")
+	return s.userRepo.Update(user)
 }
 
 // ProcessMonitorPush 处理监控推送
 func (s *settingService) ProcessMonitorPush(req *model.MonitorPushRequest) error {
-	// 确定用户ID
-	userID := uint(1) // 默认用户ID
+	// 确定用户
+	var user *model.User
+	var err error
+
 	if req.AppID != "" {
-		// 通过AppID查找用户ID
-		foundUserID, err := s.GetUserIDByAppID(req.AppID)
+		user, err = s.userRepo.GetByAppID(req.AppID)
 		if err != nil {
 			return fmt.Errorf("invalid appid: %s", req.AppID)
 		}
-		userID = foundUserID
-	}
-
-	// 获取密钥
-	key, err := s.settingRepo.GetSetting(userID, "key")
-	if err != nil {
-		return err
+	} else {
+		user, err = s.userRepo.GetByID(1)
+		if err != nil {
+			return err
+		}
 	}
 
 	// 验证签名 - 适配Android端格式：md5(type + price + timestamp + key)
-	signStr := req.Type + req.Price + req.T + key.Vvalue
+	signStr := req.Type + req.Price + req.T + user.GetKey()
 	expectedSign := fmt.Sprintf("%x", md5.Sum([]byte(signStr)))
 	if req.Sign != expectedSign {
 		return ErrInvalidSign
@@ -433,9 +443,9 @@ func (s *settingService) ProcessMonitorPush(req *model.MonitorPushRequest) error
 	}
 
 	// 查找该用户最近创建的匹配订单
-	order, err := s.orderRepo.GetRecentPendingOrderByPriceAndType(userID, price, orderType)
+	order, err := s.orderRepo.GetRecentPendingOrderByPriceAndType(user.Id, price, orderType)
 	if err != nil {
-		log.Printf("未找到匹配的订单: 用户ID=%d, 价格=%f, 类型=%d, 错误=%v", userID, price, orderType, err)
+		log.Printf("未找到匹配的订单: 用户ID=%d, 价格=%f, 类型=%d, 错误=%v", user.Id, price, orderType, err)
 		// 即使没找到订单，也更新lastpay时间
 	} else {
 		// 更新订单状态为已支付
@@ -446,13 +456,14 @@ func (s *settingService) ProcessMonitorPush(req *model.MonitorPushRequest) error
 		if err != nil {
 			log.Printf("更新订单状态失败: 订单ID=%s, 错误=%v", order.Order_id, err)
 		} else {
-			log.Printf("订单支付成功: 订单ID=%s, 用户ID=%d, 价格=%f", order.Order_id, userID, price)
+			log.Printf("订单支付成功: 订单ID=%s, 用户ID=%d, 价格=%f", order.Order_id, user.Id, price)
 		}
 	}
 
 	// 更新最后支付时间
-	now := strconv.FormatInt(time.Now().Unix(), 10)
-	return s.settingRepo.UpdateSetting(userID, "lastpay", now)
+	now := time.Now().Unix()
+	user.Lastpay = &now
+	return s.userRepo.Update(user)
 }
 
 // GetSystemInfo 获取系统信息
@@ -514,35 +525,6 @@ func (s *settingService) getUptime() string {
 	}
 }
 
-// GetUserSettingValue 获取指定用户的设置值
-func (s *settingService) GetUserSettingValue(userID uint, key string) (string, error) {
-	setting, err := s.settingRepo.GetSetting(userID, key)
-	if err != nil {
-		return "", err
-	}
-	return setting.Vvalue, nil
-}
-
-// GetUserIDByAppID 通过AppID获取用户ID
-func (s *settingService) GetUserIDByAppID(appId string) (uint, error) {
-	return s.merchantRepo.GetUserIDByAppID(appId)
-}
-
-// SetMerchantMapping 设置商户映射
-func (s *settingService) SetMerchantMapping(userID uint, appId string) error {
-	// 检查AppId是否已被其他用户使用
-	exists, err := s.merchantRepo.CheckAppIdExists(appId, userID)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return errors.New("商户ID已被使用")
-	}
-
-	// 更新商户映射
-	return s.merchantRepo.UpsertMapping(appId, userID)
-}
-
 // calculateMonitorStatus 计算监控状态
 // 返回值：0-未知 1-正常 2-异常
 func (s *settingService) calculateMonitorStatus(lastHeartStr string) int {
@@ -586,35 +568,40 @@ func (s *settingService) CheckAndUpdateMonitorStatus() error {
 	const heartbeatTimeout = 180
 	currentTime := time.Now().Unix()
 
-	// 获取所有有lastheart设置的用户
-	settings, err := s.settingRepo.GetAllSettingsByKey("lastheart")
-	if err != nil {
-		return err
-	}
+	// 获取所有用户（分页获取，避免一次性加载过多数据）
+	page := 1
+	limit := 100
 
-	for _, setting := range settings {
-		userID := setting.User_id
-		lastHeartStr := setting.Vvalue
-
-		if lastHeartStr == "" {
-			// 没有心跳记录，设置为掉线状态
-			s.settingRepo.UpdateSetting(userID, "jkstate", "0")
-			continue
+	for {
+		users, total, err := s.userRepo.GetUsers(page, limit, "")
+		if err != nil {
+			return err
 		}
 
-		heartTime, err := strconv.ParseInt(lastHeartStr, 10, 64)
-		if err != nil || heartTime <= 0 {
-			// 心跳时间格式错误，设置为掉线状态
-			s.settingRepo.UpdateSetting(userID, "jkstate", "0")
-			continue
+		for _, user := range users {
+			if user.Lastheart == nil || *user.Lastheart == 0 {
+				// 没有心跳记录，设置为掉线状态
+				jkstate := 0
+				user.Jkstate = &jkstate
+				s.userRepo.Update(user)
+				continue
+			}
+
+			// 检查心跳是否超时
+			if currentTime-*user.Lastheart >= heartbeatTimeout {
+				// 心跳超时，设置为掉线状态
+				jkstate := 0
+				user.Jkstate = &jkstate
+				s.userRepo.Update(user)
+			}
+			// 如果心跳正常，不需要更新，因为心跳接口会自动设置为1
 		}
 
-		// 检查心跳是否超时
-		if currentTime-heartTime >= heartbeatTimeout {
-			// 心跳超时，设置为掉线状态
-			s.settingRepo.UpdateSetting(userID, "jkstate", "0")
+		// 检查是否还有更多用户
+		if int64(page*limit) >= total {
+			break
 		}
-		// 如果心跳正常，不需要更新，因为心跳接口会自动设置为1
+		page++
 	}
 
 	return nil

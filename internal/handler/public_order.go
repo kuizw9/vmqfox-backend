@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -22,15 +21,17 @@ import (
 type PublicOrderHandler struct {
 	orderService   service.OrderService
 	settingService service.SettingService
+	userService    service.UserService
 	qrcodeService  service.QrcodeService
 	db             *gorm.DB
 }
 
 // NewPublicOrderHandler 创建公开订单处理器
-func NewPublicOrderHandler(orderService service.OrderService, settingService service.SettingService, qrcodeService service.QrcodeService, db *gorm.DB) *PublicOrderHandler {
+func NewPublicOrderHandler(orderService service.OrderService, settingService service.SettingService, userService service.UserService, qrcodeService service.QrcodeService, db *gorm.DB) *PublicOrderHandler {
 	return &PublicOrderHandler{
 		orderService:   orderService,
 		settingService: settingService,
+		userService:    userService,
 		qrcodeService:  qrcodeService,
 		db:             db,
 	}
@@ -95,9 +96,15 @@ func (h *PublicOrderHandler) CreateOrder(c *gin.Context) {
 		return
 	}
 
-	// 获取该用户的密钥
-	key, err := h.settingService.GetUserSettingValue(userID, "key")
-	if err != nil || key == "" {
+	// 获取该用户的配置
+	user, err := h.userService.GetUserByID(userID)
+	if err != nil {
+		response.Error(c, response.CodeInternalError, "商户配置错误")
+		return
+	}
+
+	key := user.GetKey()
+	if key == "" {
 		response.Error(c, response.CodeInternalError, "商户密钥配置错误")
 		return
 	}
@@ -121,8 +128,11 @@ func (h *PublicOrderHandler) CreateOrder(c *gin.Context) {
 	}
 
 	// 检查该用户的监控端状态
-	jkstate, err := h.settingService.GetUserSettingValue(userID, "jkstate")
-	if err != nil || jkstate != "1" {
+	jkstate := 0
+	if user.Jkstate != nil {
+		jkstate = *user.Jkstate
+	}
+	if jkstate != 1 {
 		response.Error(c, response.CodeBadRequest, "监控端状态异常，请检查")
 		return
 	}
@@ -138,7 +148,7 @@ func (h *PublicOrderHandler) CreateOrder(c *gin.Context) {
 	orderID := fmt.Sprintf("%s%05d", time.Now().Format("20060102150405"), rand.Intn(100000))
 
 	// 金额处理和二维码匹配逻辑
-	reallyPrice, payURL, isAuto, err := h.processOrderAmount(req.Type, req.Price, orderID)
+	reallyPrice, payURL, isAuto, err := h.processOrderAmount(user, req.Type, req.Price, orderID)
 	if err != nil {
 		response.Error(c, response.CodeBadRequest, err.Error())
 		return
@@ -147,12 +157,12 @@ func (h *PublicOrderHandler) CreateOrder(c *gin.Context) {
 	// 获取回调地址
 	finalNotifyURL := req.NotifyURL
 	if finalNotifyURL == "" {
-		finalNotifyURL, _ = h.settingService.GetSettingValue("notifyUrl")
+		finalNotifyURL = user.GetNotifyUrl()
 	}
 
 	finalReturnURL := req.ReturnURL
 	if finalReturnURL == "" {
-		finalReturnURL, _ = h.settingService.GetSettingValue("returnUrl")
+		finalReturnURL = user.GetReturnUrl()
 	}
 
 	// 创建订单数据
@@ -258,12 +268,12 @@ func (h *PublicOrderHandler) CreateOrder(c *gin.Context) {
 }
 
 // processOrderAmount 处理订单金额和二维码匹配逻辑
-func (h *PublicOrderHandler) processOrderAmount(payType int, price float64, orderID string) (float64, string, int, error) {
+func (h *PublicOrderHandler) processOrderAmount(user *model.User, payType int, price float64, orderID string) (float64, string, int, error) {
 	// 使用分进行金额计算，避免精度问题
 	reallyPriceCent := int(price * 100)
 
 	// 获取payQf配置，用于金额递增/递减
-	payQf, _ := h.settingService.GetSettingValue("payQf")
+	payQf := user.GetPayQf()
 
 	// 使用tmp_price表避免金额冲突，最多尝试10次
 	var payURL string
@@ -298,9 +308,9 @@ func (h *PublicOrderHandler) processOrderAmount(payType int, price float64, orde
 		}
 
 		// 如果插入失败（金额冲突），根据配置微调价格
-		if payQf == "1" { // 金额递增模式
+		if payQf == 1 { // 金额递增模式
 			reallyPriceCent++
-		} else if payQf == "2" { // 金额递减模式
+		} else if payQf == 2 { // 金额递减模式
 			reallyPriceCent--
 		} else {
 			// 不调整金额，直接使用第一次尝试的金额
@@ -316,14 +326,13 @@ func (h *PublicOrderHandler) processOrderAmount(payType int, price float64, orde
 
 	// 如果没有找到匹配的二维码，使用通用收款码
 	if payURL == "" {
-		settingKey := "zfbpay"
 		if payType == 1 {
-			settingKey = "wxpay"
+			payURL = user.GetWxpay()
+		} else {
+			payURL = user.GetZfbpay()
 		}
 
-		var err error
-		payURL, err = h.settingService.GetSettingValue(settingKey)
-		if err != nil || payURL == "" {
+		if payURL == "" {
 			payMethodName := "支付宝"
 			if payType == 1 {
 				payMethodName = "微信"
@@ -360,12 +369,10 @@ func (h *PublicOrderHandler) GetOrder(c *gin.Context) {
 	}
 
 	// 获取关闭时间配置
-	closeTimeSetting, _ := h.settingService.GetSettingValue("close")
+	user, err := h.userService.GetUserByID(order.User_id)
 	closeTime := 5 // 默认5分钟
-	if closeTimeSetting != "" {
-		if ct, err := strconv.Atoi(closeTimeSetting); err == nil && ct > 0 {
-			closeTime = ct
-		}
+	if err == nil && user.Close != nil && *user.Close > 0 {
+		closeTime = *user.Close
 	}
 
 	// 计算剩余时间
@@ -420,12 +427,10 @@ func (h *PublicOrderHandler) CheckOrderStatus(c *gin.Context) {
 	}
 
 	// 获取订单超时时间设置
-	closeTimeSetting, _ := h.settingService.GetSettingValue("close")
+	user, err := h.userService.GetUserByID(order.User_id)
 	closeTime := 5 // 默认5分钟
-	if closeTimeSetting != "" {
-		if ct, err := strconv.Atoi(closeTimeSetting); err == nil && ct > 0 {
-			closeTime = ct
-		}
+	if err == nil && user.Close != nil && *user.Close > 0 {
+		closeTime = *user.Close
 	}
 
 	timeoutSeconds := closeTime * 60
@@ -502,11 +507,13 @@ func (h *PublicOrderHandler) identifyUserByAppID(appId string) (uint, error) {
 		return 0, fmt.Errorf("AppID不能为空")
 	}
 
-	// 通过AppID查找用户ID
-	userID, err := h.settingService.GetUserIDByAppID(appId)
+	// 通过AppID查找用户
+	user, err := h.userService.GetUserByAppID(appId)
 	if err != nil {
 		return 0, fmt.Errorf("无效的商户ID: %s", appId)
 	}
+
+	userID := user.Id
 
 	return userID, nil
 }

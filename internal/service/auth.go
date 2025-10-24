@@ -1,11 +1,9 @@
 package service
 
 import (
-	"crypto/md5"
 	"errors"
 	"fmt"
 	"log"
-	"strconv"
 	"sync"
 	"time"
 	"vmqfox-api-go/internal/model"
@@ -44,19 +42,17 @@ type AuthService interface {
 
 // authService 认证服务实现
 type authService struct {
-	userRepo     repository.UserRepository
-	settingRepo  repository.SettingRepository
-	merchantRepo repository.MerchantRepository
-	jwtManager   *jwt.JWTManager
+	userRepo           repository.UserRepository
+	globalSettingRepo  repository.GlobalSettingRepository
+	jwtManager         *jwt.JWTManager
 }
 
 // NewAuthService 创建认证服务
-func NewAuthService(userRepo repository.UserRepository, settingRepo repository.SettingRepository, merchantRepo repository.MerchantRepository, jwtManager *jwt.JWTManager) AuthService {
+func NewAuthService(userRepo repository.UserRepository, globalSettingRepo repository.GlobalSettingRepository, jwtManager *jwt.JWTManager) AuthService {
 	return &authService{
-		userRepo:     userRepo,
-		settingRepo:  settingRepo,
-		merchantRepo: merchantRepo,
-		jwtManager:   jwtManager,
+		userRepo:          userRepo,
+		globalSettingRepo: globalSettingRepo,
+		jwtManager:        jwtManager,
 	}
 }
 
@@ -103,29 +99,10 @@ func (s *authService) Login(req *model.LoginRequest) (*model.LoginResponse, erro
 
 // getRegisterConfig 获取注册配置
 func (s *authService) getRegisterConfig() (*model.RegisterConfig, error) {
-	// 获取配置（使用用户ID=1作为全局配置）
-	settingsMap, err := s.settingRepo.GetSettingsMap(1)
+	// 从global_settings表获取配置
+	config, err := s.globalSettingRepo.GetRegisterConfig()
 	if err != nil {
 		return nil, err
-	}
-
-	config := &model.RegisterConfig{
-		Enabled:         settingsMap["register_enabled"] == "1",
-		DefaultRole:     settingsMap["register_default_role"],
-		RequireApproval: settingsMap["register_require_approval"] == "1",
-		RateLimit:       10, // 默认值
-	}
-
-	// 解析频率限制
-	if rateLimitStr, exists := settingsMap["register_rate_limit"]; exists {
-		if rateLimit, err := strconv.Atoi(rateLimitStr); err == nil {
-			config.RateLimit = rateLimit
-		}
-	}
-
-	// 设置默认值
-	if config.DefaultRole == "" {
-		config.DefaultRole = model.RoleAdmin
 	}
 
 	// 验证默认角色是否有效
@@ -316,67 +293,14 @@ func (s *authService) Logout(userID uint) error {
 	return nil
 }
 
-// createUserSettings 为新用户创建完整的setting表数据
+// createUserSettings 为新用户创建完整的配置数据（已废弃，配置已移至users表）
 func (s *authService) createUserSettings(user *model.User) error {
-	// 生成key，与原版ThinkPHP5.1保持一致
-	keyValue := fmt.Sprintf("%x", md5.Sum([]byte(fmt.Sprintf("%d", time.Now().Unix()))))
-
-	// 定义默认设置
-	defaultSettings := map[string]string{
-		"user":      user.Username,
-		"pass":      user.Password,                // 使用加密后的密码
-		"close":     "5",                          // 订单过期时间（小时）
-		"jkstate":   "0",                          // 监控状态
-		"key":       keyValue,                     // API密钥
-		"lastheart": "",                           // 最后心跳时间
-		"lastpay":   "",                           // 最后支付时间
-		"notifyUrl": "https://example.com/notify", // 通知URL
-		"returnUrl": "https://example.com/return", // 返回URL
-		"payQf":     "1",                          // 支付配置
-		"wxpay":     "",                           // 微信支付二维码
-		"zfbpay":    "",                           // 支付宝支付二维码
-	}
-
-	// 批量创建设置
-	for key, value := range defaultSettings {
-		setting := &model.Setting{
-			Vkey:    key,
-			User_id: user.Id,
-			Vvalue:  value,
-		}
-
-		if err := s.settingRepo.CreateSetting(setting); err != nil {
-			log.Printf("Failed to create setting %s for user %d: %v", key, user.Id, err)
-			// 继续创建其他设置，不因为单个设置失败而中断
-		}
-	}
-
-	// 自动生成AppID并保存到setting表
-	appID, err := s.generateAppID()
-	if err != nil {
-		log.Printf("Failed to generate AppID for user %d: %v", user.Id, err)
-		// 不因为AppID生成失败而中断注册流程，但记录错误
-	} else {
-		// 保存AppID到setting表
-		if err := s.settingRepo.UpdateSetting(user.Id, "appId", appID); err != nil {
-			log.Printf("Failed to save AppID to settings for user %d with AppID %s: %v", user.Id, appID, err)
-			// 不因为保存失败而中断注册流程，但记录错误
-		} else {
-			// 同步到merchant_mapping表
-			if err := s.merchantRepo.UpsertMapping(appID, user.Id); err != nil {
-				log.Printf("Failed to sync AppID to merchant mapping for user %d with AppID %s: %v", user.Id, appID, err)
-				// 不因为同步失败而中断注册流程，但记录错误
-			} else {
-				log.Printf("Successfully created and synced AppID %s for user %s (ID: %d)", appID, user.Username, user.Id)
-			}
-		}
-	}
-
-	log.Printf("Successfully created settings for user %s (ID: %d)", user.Username, user.Id)
+	// 配置已在UserService.CreateUser中处理，这里不需要再创建
+	log.Printf("User settings are now managed in users table for user %s (ID: %d)", user.Username, user.Id)
 	return nil
 }
 
-// generateAppID 生成唯一的AppID
+// generateAppID 生成唯一的AppID（已废弃，AppID在UserService中生成）
 func (s *authService) generateAppID() (string, error) {
 	const charset = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	const maxAttempts = 10
@@ -391,12 +315,14 @@ func (s *authService) generateAppID() (string, error) {
 		appID := "VMQ_" + string(randomBytes)
 
 		// 检查AppID是否已存在
-		exists, err := s.merchantRepo.CheckAppIdExists(appID, 0)
+		_, err := s.userRepo.GetByAppID(appID)
 		if err != nil {
-			return "", fmt.Errorf("failed to check AppID existence: %v", err)
+			// AppID不存在，可以使用
+			return appID, nil
 		}
 
-		if !exists {
+		// AppID已存在，继续尝试
+		if attempt < maxAttempts-1 {
 			return appID, nil
 		}
 

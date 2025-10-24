@@ -13,16 +13,44 @@ import (
 
 // User 用户模型 - 直接使用数据库字段名
 type User struct {
-	Id              uint    `json:"id" gorm:"primarykey"`
-	Username        string  `json:"username" gorm:"uniqueIndex;size:50;not null"`
-	Email           string  `json:"email" gorm:"uniqueIndex;size:100;not null"`
-	Password        string  `json:"-" gorm:"size:191;not null"`
-	Role            string  `json:"role" gorm:"type:enum('super_admin','admin');not null;default:'admin'"`
-	Status          int     `json:"status" gorm:"type:tinyint(1);not null;default:1"`
+	// 基本信息
+	Id       uint   `json:"id" gorm:"primarykey"`
+	Username string `json:"username" gorm:"uniqueIndex;size:50;not null"`
+	Email    string `json:"email" gorm:"uniqueIndex;size:100;not null"`
+	Password string `json:"-" gorm:"size:191;not null"`
+	Role     string `json:"role" gorm:"type:enum('super_admin','admin');not null;default:'admin'"`
+	Status   int    `json:"status" gorm:"type:tinyint(1);not null;default:1"`
+
+	// API认证配置
+	User  *string `json:"user" gorm:"size:50;column:user"`
+	Pass  *string `json:"pass" gorm:"size:191;column:pass"`
+	Key   *string `json:"key" gorm:"size:191;column:key"`
+	AppId *string `json:"appId" gorm:"uniqueIndex;size:32;column:appId"`
+
+	// 支付回调配置
+	NotifyUrl *string `json:"notifyUrl" gorm:"size:255;column:notifyUrl"`
+	ReturnUrl *string `json:"returnUrl" gorm:"size:255;column:returnUrl"`
+
+	// 订单配置
+	Close *int `json:"close" gorm:"default:5;column:close"`
+	PayQf *int `json:"payQf" gorm:"type:tinyint(1);default:1;column:payQf"`
+
+	// 收款码配置
+	Wxpay  *string `json:"wxpay" gorm:"type:text;column:wxpay"`
+	Zfbpay *string `json:"zfbpay" gorm:"type:text;column:zfbpay"`
+
+	// 监控状态
+	Lastheart *int64 `json:"lastheart" gorm:"column:lastheart"`
+	Lastpay   *int64 `json:"lastpay" gorm:"column:lastpay"`
+	Jkstate   *int   `json:"jkstate" gorm:"type:tinyint(1);default:0;column:jkstate"`
+
+	// 登录信息
 	Last_login_time *int64  `json:"last_login_time"`
 	Last_login_ip   *string `json:"last_login_ip" gorm:"size:45"`
-	Created_at      int64   `json:"created_at" gorm:"not null"`
-	Updated_at      int64   `json:"updated_at" gorm:"not null"`
+
+	// 时间戳
+	Created_at int64 `json:"created_at" gorm:"not null"`
+	Updated_at int64 `json:"updated_at" gorm:"not null"`
 }
 
 // TableName 指定表名
@@ -107,6 +135,112 @@ func (u *User) CanViewGlobalData() bool {
 // CanModifySystemSettings 检查是否可以修改系统设置
 func (u *User) CanModifySystemSettings() bool {
 	return u.IsSuperAdmin() // 只有超级管理员可以修改系统设置
+}
+
+// ==================== 配置字段辅助方法 ====================
+
+// GetUser 获取API用户名
+func (u *User) GetUser() string {
+	if u.User != nil {
+		return *u.User
+	}
+	return ""
+}
+
+// GetPass 获取API密码
+func (u *User) GetPass() string {
+	if u.Pass != nil {
+		return *u.Pass
+	}
+	return ""
+}
+
+// GetKey 获取通信密钥
+func (u *User) GetKey() string {
+	if u.Key != nil {
+		return *u.Key
+	}
+	return ""
+}
+
+// GetAppId 获取应用ID
+func (u *User) GetAppId() string {
+	if u.AppId != nil {
+		return *u.AppId
+	}
+	return ""
+}
+
+// GetNotifyUrl 获取异步回调地址
+func (u *User) GetNotifyUrl() string {
+	if u.NotifyUrl != nil {
+		return *u.NotifyUrl
+	}
+	return ""
+}
+
+// GetReturnUrl 获取同步返回地址
+func (u *User) GetReturnUrl() string {
+	if u.ReturnUrl != nil {
+		return *u.ReturnUrl
+	}
+	return ""
+}
+
+// GetClose 获取订单超时时间
+func (u *User) GetClose() int {
+	if u.Close != nil {
+		return *u.Close
+	}
+	return 5 // 默认5分钟
+}
+
+// GetPayQf 获取支付区分方式
+func (u *User) GetPayQf() int {
+	if u.PayQf != nil {
+		return *u.PayQf
+	}
+	return 1 // 默认金额递增
+}
+
+// GetWxpay 获取微信收款码
+func (u *User) GetWxpay() string {
+	if u.Wxpay != nil {
+		return *u.Wxpay
+	}
+	return ""
+}
+
+// GetZfbpay 获取支付宝收款码
+func (u *User) GetZfbpay() string {
+	if u.Zfbpay != nil {
+		return *u.Zfbpay
+	}
+	return ""
+}
+
+// GetLastheart 获取最后心跳时间
+func (u *User) GetLastheart() int64 {
+	if u.Lastheart != nil {
+		return *u.Lastheart
+	}
+	return 0
+}
+
+// GetLastpay 获取最后支付时间
+func (u *User) GetLastpay() int64 {
+	if u.Lastpay != nil {
+		return *u.Lastpay
+	}
+	return 0
+}
+
+// GetJkstate 获取监控状态
+func (u *User) GetJkstate() int {
+	if u.Jkstate != nil {
+		return *u.Jkstate
+	}
+	return 0 // 默认离线
 }
 
 // ToSafeUser 转换为安全的用户信息（保持兼容性）
@@ -288,14 +422,6 @@ type LoginResponse struct {
 type RegisterResponse struct {
 	Message string `json:"message" example:"注册成功"`
 	User    *User  `json:"user"`
-}
-
-// RegisterConfig 注册配置
-type RegisterConfig struct {
-	Enabled         bool   `json:"enabled"`          // 是否开放注册
-	DefaultRole     string `json:"default_role"`     // 默认角色
-	RequireApproval bool   `json:"require_approval"` // 是否需要审核
-	RateLimit       int    `json:"rate_limit"`       // 频率限制（每小时）
 }
 
 // SafeUser 安全的用户信息（别名，保持兼容性）

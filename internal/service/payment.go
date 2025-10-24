@@ -4,7 +4,6 @@ import (
 	"crypto/md5"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -31,35 +30,35 @@ type PaymentService interface {
 // paymentService 支付页面服务实现
 type paymentService struct {
 	orderRepo     repository.OrderRepository
-	settingRepo   repository.SettingRepository
+	userRepo      repository.UserRepository
 	qrcodeService QrcodeService
 }
 
 // NewPaymentService 创建支付页面服务
-func NewPaymentService(orderRepo repository.OrderRepository, settingRepo repository.SettingRepository, qrcodeService QrcodeService) PaymentService {
+func NewPaymentService(orderRepo repository.OrderRepository, userRepo repository.UserRepository, qrcodeService QrcodeService) PaymentService {
 	return &paymentService{
 		orderRepo:     orderRepo,
-		settingRepo:   settingRepo,
+		userRepo:      userRepo,
 		qrcodeService: qrcodeService,
 	}
 }
 
 // getOrderExpireMinutes 获取订单过期时间（分钟）
-// 根据用户ID从setting表中读取close字段值，如果没有则使用默认值5分钟
+// 根据用户ID从users表中读取close字段值，如果没有则使用默认值5分钟
 func (s *paymentService) getOrderExpireMinutes(userID uint) int {
-	setting, err := s.settingRepo.GetSetting(userID, "close")
+	user, err := s.userRepo.GetByID(userID)
 	if err != nil {
 		// 如果获取失败，使用默认值5分钟
 		return 5
 	}
 
-	minutes, err := strconv.Atoi(setting.Vvalue)
-	if err != nil || minutes <= 0 {
-		// 如果转换失败或值无效，使用默认值5分钟
-		return 5
+	// 获取close字段值
+	if user.Close != nil && *user.Close > 0 {
+		return *user.Close
 	}
 
-	return minutes
+	// 如果值无效，使用默认值5分钟
+	return 5
 }
 
 // GetPaymentOrder 获取支付页面订单信息
@@ -197,10 +196,11 @@ func (s *paymentService) GenerateReturnURL(orderID string) (string, error) {
 	}
 
 	// 获取用户密钥
-	key, err := s.settingRepo.GetSetting(order.User_id, "key")
+	user, err := s.userRepo.GetByID(order.User_id)
 	if err != nil {
-		return "", fmt.Errorf("获取用户密钥失败: %v", err)
+		return "", fmt.Errorf("获取用户信息失败: %v", err)
 	}
+	key := user.GetKey()
 
 	// 格式化价格，保证精度一致
 	priceStr := fmt.Sprintf("%.2f", order.Price)
@@ -211,7 +211,7 @@ func (s *paymentService) GenerateReturnURL(orderID string) (string, error) {
 		order.Pay_id, order.Param, order.Type, priceStr, reallyPriceStr)
 
 	// 计算签名：payId + param + type + price + reallyPrice + key
-	signStr := order.Pay_id + order.Param + fmt.Sprintf("%d", order.Type) + priceStr + reallyPriceStr + key.Vvalue
+	signStr := order.Pay_id + order.Param + fmt.Sprintf("%d", order.Type) + priceStr + reallyPriceStr + key
 	sign := fmt.Sprintf("%x", md5.Sum([]byte(signStr)))
 
 	// 添加签名到参数

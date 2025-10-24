@@ -16,13 +16,15 @@ import (
 type OrderHandler struct {
 	orderService   service.OrderService
 	settingService service.SettingService
+	userService    service.UserService
 }
 
 // NewOrderHandler 创建订单处理器
-func NewOrderHandler(orderService service.OrderService, settingService service.SettingService) *OrderHandler {
+func NewOrderHandler(orderService service.OrderService, settingService service.SettingService, userService service.UserService) *OrderHandler {
 	return &OrderHandler{
 		orderService:   orderService,
 		settingService: settingService,
+		userService:    userService,
 	}
 }
 
@@ -552,12 +554,11 @@ func (h *OrderHandler) getOrderForPayment(c *gin.Context, orderID string) {
 	}
 
 	// 获取订单超时时间设置
-	closeTimeSetting, _ := h.settingService.GetSettingValue("close")
+	userID := middleware.GetCurrentUserID(c)
+	user, err := h.userService.GetUserByID(userID)
 	closeTime := 5 // 默认5分钟
-	if closeTimeSetting != "" {
-		if ct, err := strconv.Atoi(closeTimeSetting); err == nil && ct > 0 {
-			closeTime = ct
-		}
+	if err == nil && user.Close != nil && *user.Close > 0 {
+		closeTime = *user.Close
 	}
 
 	// 计算剩余时间

@@ -2,7 +2,7 @@ package model
 
 import "time"
 
-// Setting 系统设置模型
+// Setting 系统设置模型（已废弃，保留用于数据迁移）
 type Setting struct {
 	Vkey    string `json:"vkey" gorm:"primaryKey;size:255;column:vkey"`
 	User_id uint   `json:"user_id" gorm:"primaryKey;default:1;column:user_id"`
@@ -12,6 +12,25 @@ type Setting struct {
 // TableName 指定表名
 func (Setting) TableName() string {
 	return "setting"
+}
+
+// GlobalSetting 全局系统设置模型
+type GlobalSetting struct {
+	Key   string `json:"key" gorm:"primaryKey;size:255;column:key"`
+	Value string `json:"value" gorm:"type:text;column:value"`
+}
+
+// TableName 指定表名
+func (GlobalSetting) TableName() string {
+	return "global_settings"
+}
+
+// RegisterConfig 注册配置
+type RegisterConfig struct {
+	Enabled         bool   `json:"enabled"`          // 是否开放注册
+	DefaultRole     string `json:"default_role"`     // 默认角色
+	RequireApproval bool   `json:"require_approval"` // 是否需要审核
+	RateLimit       int    `json:"rate_limit"`       // 频率限制（每小时）
 }
 
 // ==================== 系统配置相关请求和响应结构 ====================

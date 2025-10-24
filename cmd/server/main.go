@@ -50,28 +50,24 @@ func main() {
 	userRepo := repository.NewUserRepository(db)
 	orderRepo := repository.NewOrderRepository(db)
 	qrcodeRepo := repository.NewQrcodeRepository(db)
-	settingRepo := repository.NewSettingRepository(db)
-	merchantRepo := repository.NewMerchantRepository(db)
+	globalSettingRepo := repository.NewGlobalSettingRepository(db)
 
 	// 初始化服务层
-	userService := service.NewUserService(userRepo, settingRepo)
-	authService := service.NewAuthService(userRepo, settingRepo, merchantRepo, jwtManager)
-	orderService := service.NewOrderService(orderRepo, userRepo, settingRepo)
+	userService := service.NewUserService(userRepo)
+	authService := service.NewAuthService(userRepo, globalSettingRepo, jwtManager)
+	orderService := service.NewOrderService(orderRepo, userRepo)
 	qrcodeService := service.NewQrcodeService(qrcodeRepo)
-	settingService := service.NewSettingService(settingRepo, orderRepo, merchantRepo)
-	paymentService := service.NewPaymentService(orderRepo, settingRepo, qrcodeService)
-
-	// 设置双向同步：setting服务需要能够同步到user服务
-	settingService.SetUserSyncService(userService)
+	settingService := service.NewSettingService(userRepo, orderRepo)
+	paymentService := service.NewPaymentService(orderRepo, userRepo, qrcodeService)
 
 	// 初始化处理器
 	userHandler := handler.NewUserHandler(userService)
 	authHandler := handler.NewAuthHandler(authService)
-	orderHandler := handler.NewOrderHandler(orderService, settingService)
+	orderHandler := handler.NewOrderHandler(orderService, settingService, userService)
 	qrcodeHandler := handler.NewQrcodeHandler(qrcodeService)
 	settingHandler := handler.NewSettingHandler(settingService)
 	paymentHandler := handler.NewPaymentHandler(paymentService)
-	publicOrderHandler := handler.NewPublicOrderHandler(orderService, settingService, qrcodeService, db)
+	publicOrderHandler := handler.NewPublicOrderHandler(orderService, settingService, userService, qrcodeService, db)
 	menuHandler := handler.NewMenuHandler()
 
 	// 初始化定时任务调度器

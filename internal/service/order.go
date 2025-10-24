@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strconv"
 	"strings"
 	"time"
 	"vmqfox-api-go/internal/model"
@@ -46,17 +45,15 @@ type OrderService interface {
 
 // orderService 订单服务实现
 type orderService struct {
-	orderRepo   repository.OrderRepository
-	userRepo    repository.UserRepository
-	settingRepo repository.SettingRepository
+	orderRepo repository.OrderRepository
+	userRepo  repository.UserRepository
 }
 
 // NewOrderService 创建订单服务
-func NewOrderService(orderRepo repository.OrderRepository, userRepo repository.UserRepository, settingRepo repository.SettingRepository) OrderService {
+func NewOrderService(orderRepo repository.OrderRepository, userRepo repository.UserRepository) OrderService {
 	return &orderService{
-		orderRepo:   orderRepo,
-		userRepo:    userRepo,
-		settingRepo: settingRepo,
+		orderRepo: orderRepo,
+		userRepo:  userRepo,
 	}
 }
 
@@ -287,21 +284,21 @@ func (s *orderService) CloseOrder(id uint) error {
 }
 
 // getOrderExpireMinutes 获取订单过期时间（分钟）
-// 根据用户ID从setting表中读取close字段值，如果没有则使用默认值5分钟
+// 根据用户ID从users表中读取close字段值，如果没有则使用默认值5分钟
 func (s *orderService) getOrderExpireMinutes(userID uint) int {
-	setting, err := s.settingRepo.GetSetting(userID, "close")
+	user, err := s.userRepo.GetByID(userID)
 	if err != nil {
 		// 如果获取失败，使用默认值5分钟
 		return 5
 	}
 
-	minutes, err := strconv.Atoi(setting.Vvalue)
-	if err != nil || minutes <= 0 {
-		// 如果转换失败或值无效，使用默认值5分钟
-		return 5
+	// 获取close字段值
+	if user.Close != nil && *user.Close > 0 {
+		return *user.Close
 	}
 
-	return minutes
+	// 如果值无效，使用默认值5分钟
+	return 5
 }
 
 // closeExpiredOrdersForAllUsers 为所有用户关闭过期订单，使用各自的配置
@@ -397,10 +394,11 @@ func (s *orderService) GenerateReturnURL(orderID string) (string, error) {
 	}
 
 	// 获取用户密钥
-	key, err := s.settingRepo.GetSetting(order.User_id, "key")
+	user, err := s.userRepo.GetByID(order.User_id)
 	if err != nil {
-		return "", fmt.Errorf("获取用户密钥失败: %v", err)
+		return "", fmt.Errorf("获取用户信息失败: %v", err)
 	}
+	key := user.GetKey()
 
 	// 格式化价格，保证精度一致
 	priceStr := fmt.Sprintf("%.2f", order.Price)
@@ -411,7 +409,7 @@ func (s *orderService) GenerateReturnURL(orderID string) (string, error) {
 		order.Pay_id, order.Param, order.Type, priceStr, reallyPriceStr)
 
 	// 计算签名：payId + param + type + price + reallyPrice + key
-	signStr := order.Pay_id + order.Param + fmt.Sprintf("%d", order.Type) + priceStr + reallyPriceStr + key.Vvalue
+	signStr := order.Pay_id + order.Param + fmt.Sprintf("%d", order.Type) + priceStr + reallyPriceStr + key
 	sign := fmt.Sprintf("%x", md5.Sum([]byte(signStr)))
 
 	// 添加签名到参数
