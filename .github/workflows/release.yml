@@ -1,0 +1,181 @@
+name: Build & Release Go Binary (Multi-arch)
+
+# 只有在 push tag 時才觸發（例如 v1.2.3）
+on:
+  push:
+    tags:
+      - 'v*'
+
+# -------------------------------------------------
+# 1. 編譯 (amd64 / arm64)
+# -------------------------------------------------
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: linux-amd64
+            goarch: amd64
+          - target: linux-arm64
+            goarch: arm64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 確保可以讀到 go.mod
+
+      # -------------------------------------------------
+      # 1. 讀取 go.mod 中的 toolchain 版本
+      # -------------------------------------------------
+      - name: Detect Go toolchain version
+        id: go_version
+        run: |
+          # 預設使用 go 1.23
+          GO_VERSION="1.23"
+
+          # 若 go.mod 內有 `toolchain go1.xx.x` 則覆寫
+          if grep -q '^toolchain ' go.mod; then
+            TOOLCHAIN=$(grep '^toolchain ' go.mod | awk '{print $2}')
+            GO_VERSION="${TOOLCHAIN#go}"
+            echo "Found toolchain $TOOLCHAIN in go.mod"
+          else
+            echo "No toolchain line in go.mod, fallback to Go 1.23"
+          fi
+
+          echo "go_version=$GO_VERSION" >> $GITHUB_OUTPUT
+
+      # -------------------------------------------------
+      # 2. 安裝對應的 Go
+      # -------------------------------------------------
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.go_version.outputs.go_version }}
+
+      # -------------------------------------------------
+      # 3. 依賴
+      # -------------------------------------------------
+      - name: Install dependencies
+        run: go mod tidy
+
+      # -------------------------------------------------
+      # 4. 編譯 (static, strip)
+      # -------------------------------------------------
+      - name: Build binary
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          OUTPUT="vmqfox-api-${{ matrix.target }}"
+          go build -ldflags="-s -w" -o "$OUTPUT" cmd/server/main.go
+          echo "Built $OUTPUT"
+
+      # -------------------------------------------------
+      # 5. 打包 (binary + config.yaml)
+      # -------------------------------------------------
+      - name: Package tar.gz
+        run: |
+          tar -czf vmqfox-api-${{ matrix.target }}.tar.gz \
+            vmqfox-api-${{ matrix.target }} \
+            config.yaml
+
+      # -------------------------------------------------
+      # 6. 產生 SHA256
+      # -------------------------------------------------
+      - name: Generate checksum
+        run: |
+          sha256sum vmqfox-api-${{ matrix.target }}.tar.gz > \
+            vmqfox-api-${{ matrix.target }}.tar.gz.sha256
+
+      # -------------------------------------------------
+      # 7. 上傳 artifact (供後續 job 使用)
+      # -------------------------------------------------
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vmqfox-api-${{ matrix.target }}
+          path: |
+            vmqfox-api-${{ matrix.target }}.tar.gz
+            vmqfox-api-${{ matrix.target }}.tar.gz.sha256
+
+# -------------------------------------------------
+# 2. 建立 Release 並上傳所有資產
+# -------------------------------------------------
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # 必須要有寫入 Release 的權限
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Show artifact tree
+        run: ls -R artifacts
+
+      # -------------------------------------------------
+      # 1. 建立 Release
+      # -------------------------------------------------
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref_name }}
+          release_name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+
+      # -------------------------------------------------
+      # 2. 上傳 amd64 資產
+      # -------------------------------------------------
+      - name: Upload amd64 binary
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/vmqfox-api-linux-amd64/vmqfox-api-linux-amd64.tar.gz
+          asset_name: vmqfox-api-linux-amd64.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Upload amd64 checksum
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/vmqfox-api-linux-amd64/vmqfox-api-linux-amd64.tar.gz.sha256
+          asset_name: vmqfox-api-linux-amd64.tar.gz.sha256
+          asset_content_type: text/plain
+
+      # -------------------------------------------------
+      # 3. 上傳 arm64 資產
+      # -------------------------------------------------
+      - name: Upload arm64 binary
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/vmqfox-api-linux-arm64/vmqfox-api-linux-arm64.tar.gz
+          asset_name: vmqfox-api-linux-arm64.tar.gz
+          asset_content_type: application/gzip
+
+      - name: Upload arm64 checksum
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: artifacts/vmqfox-api-linux-arm64/vmqfox-api-linux-arm64.tar.gz.sha256
+          asset_name: vmqfox-api-linux-arm64.tar.gz.sha256
+          asset_content_type: text/plain
