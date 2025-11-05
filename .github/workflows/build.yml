@@ -1,0 +1,82 @@
+name: Build & Release Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - platform: linux/amd64
+            goarch: amd64
+          - platform: linux/arm64
+            goarch: arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect Go Toolchain
+        id: go
+        run: |
+          if grep -q '^toolchain ' go.mod; then
+            echo "version=$(grep '^toolchain ' go.mod | cut -d' ' -f2 | sed 's/go//')" >> $GITHUB_OUTPUT
+          else
+            echo "version=1.23" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+
+      - name: Build
+        env:
+          GOOS: linux
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          go build -ldflags="-s -w" -o vmqfox-api-linux-${{ matrix.goarch }} cmd/server/main.go
+          tar -czf vmqfox-api-linux-${{ matrix.goarch }}.tar.gz vmqfox-api-linux-${{ matrix.goarch }} config.yaml
+          sha256sum vmqfox-api-linux-${{ matrix.goarch }}.tar.gz > vmqfox-api-linux-${{ matrix.goarch }}.tar.gz.sha256
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vmqfox-api-linux-${{ matrix.goarch }}
+          path: |
+            vmqfox-api-linux-${{ matrix.goarch }}.tar.gz
+            vmqfox-api-linux-${{ matrix.goarch }}.tar.gz.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Release (Create or Update)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          fail_on_unmatched_files: false
+          files: |
+            artifacts/vmqfox-api-linux-amd64/vmqfox-api-linux-amd64.tar.gz
+            artifacts/vmqfox-api-linux-amd64/vmqfox-api-linux-amd64.tar.gz.sha256
+            artifacts/vmqfox-api-linux-arm64/vmqfox-api-linux-arm64.tar.gz
+            artifacts/vmqfox-api-linux-arm64/vmqfox-api-linux-arm64.tar.gz.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
