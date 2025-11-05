@@ -81,7 +81,7 @@ jobs:
         run: |
           tar -czf vmqfox-api-${{ matrix.target }}.tar.gz \
             vmqfox-api-${{ matrix.target }} \
-            config.yaml
+            config.example.yaml
 
       # -------------------------------------------------
       # 6. 產生 SHA256
